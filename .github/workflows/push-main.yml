@@ -1,0 +1,83 @@
+name: push-ci-images
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-push-image:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
+
+      - uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+        with:
+          go-version: '1.21'
+          check-latest: true
+          cache: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
+
+      - uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
+
+      - uses: anchore/sbom-action/download-syft@e8d2a6937ecead383dfe75190d104edd1f9c5751 # v0.16.0
+
+      - uses: goreleaser/goreleaser-action@5742e2a039330cbb23ebf35f046f814d4c6ff811 # v5.1.0
+        with:
+          install-only: true
+
+      - name: run goreleaser-snapshot
+        run: |
+          make goreleaser-snapshot
+          docker images
+          docker run falcosecurity/falcosidekick:latest-amd64 --version
+          docker run public.ecr.aws/falcosecurity/falcosidekick:latest-amd64 --version
+        env:
+          GOPATH: /home/runner/go
+
+      # Push images to DockerHUB
+      - name: Login to Docker Hub
+        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_SECRET }}
+
+      - name: Push images to Dockerhub
+        run: |
+          docker push falcosecurity/falcosidekick:latest-amd64
+          docker push falcosecurity/falcosidekick:latest-arm64
+          docker push falcosecurity/falcosidekick:latest-armv7
+          docker manifest create --amend falcosecurity/falcosidekick:latest falcosecurity/falcosidekick:latest-amd64 \
+            falcosecurity/falcosidekick:latest-arm64 falcosecurity/falcosidekick:latest-armv7
+          docker manifest push --purge falcosecurity/falcosidekick:latest
+
+      # Push images to AWS Public ECR
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: arn:aws:iam::292999226676:role/github_actions-falcosidekick-ecr
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+        with:
+          registry-type: public
+
+      - run: |
+          docker push public.ecr.aws/falcosecurity/falcosidekick:latest-amd64
+          docker push public.ecr.aws/falcosecurity/falcosidekick:latest-arm64
+          docker push public.ecr.aws/falcosecurity/falcosidekick:latest-armv7
+          docker manifest create --amend public.ecr.aws/falcosecurity/falcosidekick:latest public.ecr.aws/falcosecurity/falcosidekick:latest-amd64 \
+            public.ecr.aws/falcosecurity/falcosidekick:latest-arm64 public.ecr.aws/falcosecurity/falcosidekick:latest-armv7
+          docker manifest push --purge public.ecr.aws/falcosecurity/falcosidekick:latest
